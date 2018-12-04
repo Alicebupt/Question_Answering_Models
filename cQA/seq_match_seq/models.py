@@ -1,4 +1,6 @@
-# -*- encoding:utf-8 -*-
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 import tensorflow as tf
 import numpy as np
 
@@ -63,7 +65,7 @@ class SeqMatchSeq(object):
         a: [batch_size, a_length, embedding_dim]
         """
         with tf.variable_scope('context_encoding') as scope:
-            q_encode = self.proj_layer(q, 'proj_layer', reuse=None)
+            q_encode = self.proj_layer(q, 'proj_layer', reuse=False)
             a_encode = self.proj_layer(a, 'proj_layer', reuse=True)
         return q_encode, a_encode
 
@@ -80,7 +82,7 @@ class SeqMatchSeq(object):
         # [batch_size, a_length, q_length]
         q_weights = tf.nn.softmax(
                         tf.transpose(
-                            att_inner_product, (0, 2, 1)), dim=-1)
+                            att_inner_product, (0, 2, 1)), axis=-1)
         output_a = tf.matmul(q_weights, q)
         return output_a
 
@@ -89,13 +91,60 @@ class SeqMatchSeq(object):
         a: [batch_size, a_length, mem_dim]
         a_att: [batch_size, a_length, mem_dim]
         """
+        # print(a.shape) (?, 100,128)
+        # print(h_a.shape) (?, 100, 128)
         if self.config.comp_type == 'mul':
             out = a * h_a
+        elif self.config.comp_type == 'sub':
+            out = (a-h_a) * (a-h_a)
+        elif self.config.comp_type == 'euccos':
+            a_ha = tf.concat([a,h_a], 1)
+            out = tf.map_fn(fn=lambda inp: self.dim_128(tf.expand_dims(self.euccos_dis(inp[:100], inp[100:])[:100], 1)), elems=a_ha, dtype=tf.float32)
+        elif self.config.comp_type == 'nn':
+            weights = self.weight_variable([100, 200])
+            bias = self.bias_variable([100,128])
+            a_ha = tf.concat([a,h_a], 1)
+            out = tf.map_fn(fn=lambda inp: tf.nn.relu(tf.matmul(weights,inp)+bias), elems=a_ha, dtype=tf.float32)
+        elif self.config.comp_type == 'ntn':
+            t_weights = self.weight_variable([128,100])
+            bias = self.bias_variable([100,128])
+            a_ha = tf.concat([a,h_a], 1)
+            out = tf.map_fn(fn=lambda inp: tf.nn.relu(tf.matmul(tf.matmul(inp[:100], t_weights),inp[100:])+bias), elems=a_ha, dtype=tf.float32)
+        elif self.config.comp_type == 'submulnn':
+            weights = self.weight_variable([100, 200])
+            bias = self.bias_variable([100,128])
+            sub = (a-h_a) * (a-h_a)
+            mul = a*h_a
+            submul = tf.concat([sub,mul],1)
+            out = tf.map_fn(fn=lambda inp: tf.nn.relu(tf.matmul(weights,inp)+bias), elems=submul, dtype=tf.float32)
         else:
             raise ValueError('{} method is not implemented!'.format(
                 self.config.comp_type))
-
+        print(out.shape)
         return out
+        #初始化权重
+    def weight_variable(self, shape):
+        initial = tf.truncated_normal(shape, stddev = 0.1)
+        return tf.Variable(initial)
+    #初始化偏置项
+    def bias_variable(self, shape):
+        initial = tf.constant(0.1, shape = shape )
+        return tf.Variable(initial)
+
+    def dim_128(self, a):
+        for i in range(7):
+            a = tf.concat([a,a], 1)
+        return a
+
+    def euccos_dis(self, a, b):
+        euc_dis = tf.sqrt(tf.reduce_sum(tf.square(a-b), 1))
+        #求模 
+        a_norm = tf.sqrt(tf.reduce_sum(tf.square(a), axis=1)) 
+        b_norm = tf.sqrt(tf.reduce_sum(tf.square(b), axis=1)) 
+        #内积 
+        a_b = tf.reduce_sum(tf.multiply(a, b), axis=1) 
+        cos_dis = a_b / (a_norm * b_norm)
+        return tf.concat([euc_dis, cos_dis], 0)
 
     def aggregate(self, t):
         """
@@ -121,7 +170,7 @@ class SeqMatchSeq(object):
         out = tf.concat(pool_t, axis=-1)
         # [batch_size, mem_dim]
         out = self.mlp(out, self.config.mem_dim, 1, 
-                        tf.nn.tanh, 'pre_out', use_dropout=False, reuse=None)
+                            tf.nn.tanh, 'pre_out', use_dropout=False, reuse=None)
         return out
 
     def soft_out(self, x):
@@ -143,7 +192,7 @@ class SeqMatchSeq(object):
         now = bottom
         if use_dropout:
             now = tf.nn.dropout(now, keep_prob=self.keep_prob)
-        for i in xrange(layer_num):
+        for i in range(layer_num):
             now = tf.layers.dense(now, size, 
                                   activation=activation, 
                                   name=name + '_{}'.format(i), 
@@ -166,7 +215,7 @@ class SeqMatchSeq(object):
         损失节点
         """
         # [batch_size, 2]
-        y_hat = tf.nn.softmax(pred, dim=-1)
+        y_hat = tf.nn.softmax(pred, axis=-1)
         loss = tf.reduce_mean(
             tf.losses.sparse_softmax_cross_entropy(self.y, pred))
         tf.add_to_collection('total_loss', loss)

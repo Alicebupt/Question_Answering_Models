@@ -1,4 +1,6 @@
-# -*- encoding:utf-8 -*-
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 import numpy as np
 import tensorflow as tf
 
@@ -66,7 +68,8 @@ def eval_map_mrr(qids, aids, preds, labels):
 def build_embedding(in_file, word_dict):
 	# 构建预训练的embedding矩阵
     num_words = max(word_dict.values()) + 1
-    dim = int(in_file.split('.')[-2][:-1])
+    dim = int(in_file.split('.')[-2][:-1]) # 300
+    print(dim)
     embeddings = np.zeros((num_words, dim))
 
     if in_file is not None:
@@ -75,7 +78,14 @@ def build_embedding(in_file, word_dict):
         avg_sigma = 0
         avg_mu = 0
         for line in open(in_file).readlines():
-            sp = line.split()
+            sp = line.strip().split()
+            if len(sp) == 300:
+                continue
+            try:
+                assert len(sp) == dim + 1
+            except AssertionError:
+                sp[len(sp)-300-1] = ''.join(sp[:len(sp)-300-1])
+                sp = sp[len(sp)-300-1:]
             assert len(sp) == dim + 1
             if sp[0] in word_dict:
                 initialized[sp[0]] = True
@@ -101,8 +111,9 @@ class Iterator(object):
     数据迭代器
     """
     def __init__(self, x):
-        self.x = x
+        self.x = list(x)
         self.sample_num = len(self.x)
+        # print(self.sample_num) 20360
 
     def next_batch(self, batch_size, shuffle=True):
         # produce X, Y_out, Y_in, X_len, Y_in_len, Y_out_len
